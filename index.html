@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>FilmLab Mobile</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#101114;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif}header{padding:22px 18px 12px}h1{font-size:25px;margin:0}small,.hint{color:#a6aab3}main{max-width:720px;margin:auto;padding:0 14px 32px}.panel{background:#1d2025;border:1px solid #333840;border-radius:16px;padding:15px;margin:12px 0}button,.upload{background:#e4b56d;color:#17130e;border:0;border-radius:12px;padding:12px 16px;font-size:15px;font-weight:650;display:inline-block;cursor:pointer}button.secondary{background:#363b43;color:#eee}input[type=file]{display:block;width:100%;font-size:16px;margin-top:10px;color:#eee}.upload{display:none}.actions{display:flex;gap:8px;flex-wrap:wrap}.frame{background:#08090a;border-radius:12px;overflow:hidden;min-height:190px;display:grid;place-items:center}canvas{display:block;max-width:100%;height:auto}label.control{display:block;margin:14px 0}label.control span{display:flex;justify-content:space-between;font-size:14px;margin-bottom:7px}input[type=range]{width:100%;accent-color:#e4b56d}p{font-size:13px;line-height:1.6}.mode{display:flex;gap:8px;margin:12px 0}.mode button{flex:1}.active{outline:2px solid #fff}.status{color:#d5c09d;font-size:12px;min-height:20px}.swatch{width:22px;height:22px;border:1px solid white;border-radius:5px;display:inline-block;vertical-align:middle;margin-left:7px}footer{color:#8b9099;font-size:12px;line-height:1.7;padding:8px 4px}</style></head><body><main><header><h1>FilmLab <small>Mobile · Web Beta 0.6</small></h1><p class="hint">手机胶片负片翻拍 · 本地处理，不上传照片</p></header>
+<div class="panel"><div class="actions"><div style="width:100%"><strong>选择一张负片照片</strong><input id="file" type="file" accept="image/jpeg,image/png,image/heic,image/heif,image/*"></div><button class="secondary" id="save">保存正片 JPG</button></div><p>支持手机可解码的 JPEG / PNG / HEIC（取决于浏览器）。S9 RW2 暂不支持，请先转成 TIFF/JPEG；当前版本以 JPEG 测试最稳。</p><div class="status" id="status">请先导入一张彩色负片照片</div></div>
+<div class="frame"><canvas id="view"></canvas></div>
+<div class="panel"><strong>反相与色罩</strong><div class="mode"><button id="auto" class="active">自动色罩</button><button id="manual" class="secondary">取样片基</button></div><p id="tip">自动模式根据每个通道的亮暗分位估算色罩与反相范围。更准确的方法：点“取样片基”，再点照片中未曝光的橙色透明片基。</p><div>片基样本 <i id="swatch" class="swatch"></i></div>
+<label class="control"><span>曝光 <output id="exposureV">0.0</output></span><input id="exposure" type="range" min="-2" max="2" step=".1" value="0"></label>
+<label class="control"><span>对比度 <output id="contrastV">1.00</output></span><input id="contrast" type="range" min=".5" max="1.8" step=".05" value="1"></label>
+<label class="control"><span>色温（冷 ← → 暖） <output id="warmthV">0</output></span><input id="warmth" type="range" min="-40" max="40" step="1" value="0"></label>
+<label class="control"><span>洋红 / 绿色 <output id="tintV">0</output></span><input id="tint" type="range" min="-35" max="35" step="1" value="0"></label>
+<label class="control"><span>饱和度 <output id="saturationV">1.00</output></span><input id="saturation" type="range" min="0" max="1.7" step=".05" value="1"></label>
+<div class="actions"><button class="secondary" id="reset">重置调整</button><button class="secondary" id="toggle">查看原始负片</button></div></div>
+<footer>实验版：采用分位数拉伸、按通道反相和可选片基取样，不是完整的色彩管理型 RAW 工作流。处理在手机浏览器内完成；大图预览会缩小到最长边 800 像素，导出也是该尺寸。拍摄时请保留一小段未曝光片基供取样。</footer>
+</main><script>
+const $=id=>document.getElementById(id),canvas=$('view'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+let original=null,sourceCanvas=document.createElement('canvas'),sample=null,pick=false,raw=false,filename='filmlab',limits=null;
+const sliders=['exposure','contrast','warmth','tint','saturation'];const defaults=[0,1,0,0,1];
+function percentile(a,p){a.sort((x,y)=>x-y);return a[Math.min(a.length-1,Math.floor((a.length-1)*p))]}
+function analyze(data){const arrays=[[],[],[]];const stride=Math.max(1,Math.floor(data.length/4/6000));for(let i=0;i<data.length;i+=stride*4){for(let c=0;c<3;c++)arrays[c].push(data[i+c])}return arrays.map(a=>{a.sort((x,y)=>x-y);return [a[Math.floor((a.length-1)*.01)],a[Math.floor((a.length-1)*.99)]]})}
+function render(){if(!original)return;const {width:w,height:h,data:src}=original;let out=ctx.createImageData(w,h),d=out.data;
+let exp=+ $('exposure').value,contrast=+$('contrast').value,warm=+$('warmth').value,tint=+$('tint').value,sat=+$('saturation').value;
+for(let i=0;i<src.length;i+=4){if(raw){for(let c=0;c<4;c++)d[i+c]=src[i+c];continue}
+let rgb=[0,0,0];for(let c=0;c<3;c++){let lo=limits[c][0],hi=sample?sample[c]:limits[c][1];let denom=Math.max(8,hi-lo);let v=(hi-src[i+c])/denom;v=Math.max(0,Math.min(1,v));v=(v-.5)*contrast+.5;v=v*Math.pow(2,exp);rgb[c]=v*255}
+rgb[0]+=warm;rgb[2]-=warm;rgb[1]-=tint;let l=.2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2];for(let c=0;c<3;c++)d[i+c]=Math.max(0,Math.min(255,l+(rgb[c]-l)*sat));d[i+3]=255}
+ctx.putImageData(out,0,0);sliders.forEach(id=>$(id+'V').textContent=(id==='contrast'||id==='saturation')?(+$(id).value).toFixed(2):id==='exposure'?(+$(id).value).toFixed(1):$(id).value)}
+function status(t){$('status').textContent=t}
+$('file').addEventListener('click',()=>status('请选择一张 JPEG 或 PNG 照片。'));
+$('file').addEventListener('change',e=>{
+ const f=e.target.files&&e.target.files[0];if(!f){status('未选中照片');return;}
+ filename=f.name.replace(/\.[^.]+$/,'');status('步骤 1/4：已选文件 '+f.name+'，读取中…');
+ const reader=new FileReader();
+ reader.onerror=()=>status('读取失败：'+(reader.error?.message||'文件权限受限'));
+ reader.onload=()=>{
+  status('步骤 2/4：文件读取成功，正在解码图片…');
+  const im=new Image();
+  im.onerror=()=>status('图片解码失败：请换 JPEG 文件，或在 Safari 中打开');
+  im.onload=()=>{
+   try{
+    status('步骤 3/4：图片解码成功，准备反相…');
+    const scale=Math.min(1,800/Math.max(im.naturalWidth,im.naturalHeight));
+    canvas.width=sourceCanvas.width=Math.max(1,Math.round(im.naturalWidth*scale));
+    canvas.height=sourceCanvas.height=Math.max(1,Math.round(im.naturalHeight*scale));
+    const sc=sourceCanvas.getContext('2d',{willReadFrequently:true});
+    sc.drawImage(im,0,0,canvas.width,canvas.height);
+    original=sc.getImageData(0,0,canvas.width,canvas.height);
+    limits=analyze(original.data);sample=null;pick=false;raw=false;
+    render();status('✓ 步骤 4/4：自动反相成功，可调节滑块');
+   }catch(err){status('图片处理失败：'+err.message)}
+  };
+  im.src=reader.result;
+ };
+ reader.readAsDataURL(f);
+});
+$('manual').onclick=()=>{if(!original)return status('请先导入照片');pick=true;raw=true;render();$('manual').classList.add('active');$('auto').classList.remove('active');$('tip').textContent='请在负片图像中点一下未曝光的透明橙色片基（最好是画面外的底片边缘）。'};
+$('auto').onclick=()=>{sample=null;pick=false;raw=false;$('auto').classList.add('active');$('manual').classList.remove('active');$('tip').textContent='已切换到自动色罩。';render()};
+canvas.onclick=e=>{if(!pick||!original)return;let rect=canvas.getBoundingClientRect(),x=Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-rect.left)/rect.width*canvas.width))),y=Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-rect.top)/rect.height*canvas.height)));let sums=[0,0,0],n=0;for(let yy=Math.max(0,y-4);yy<=Math.min(canvas.height-1,y+4);yy++)for(let xx=Math.max(0,x-4);xx<=Math.min(canvas.width-1,x+4);xx++){let i=(yy*canvas.width+xx)*4;for(let c=0;c<3;c++)sums[c]+=original.data[i+c];n++}sample=sums.map(v=>v/n);$('swatch').style.background=`rgb(${sample.map(Math.round).join(',')})`;pick=false;raw=false;render();status('已使用片基取样校正。若画面不自然，请换一处片基取样。')};
+let pending=false;function scheduleRender(){if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;try{render()}catch(e){status('处理出错：'+e.message)}})}sliders.forEach(id=>$(id).oninput=scheduleRender);
+$('reset').onclick=()=>{sliders.forEach((id,i)=>$(id).value=defaults[i]);render()};
+$('toggle').onclick=()=>{raw=!raw;render();$('toggle').textContent=raw?'返回正片':'查看原始负片'};
+$('save').onclick=()=>{if(!original)return status('请先导入照片');let wasRaw=raw;raw=false;render();canvas.toBlob(blob=>{if(!blob)return status('导出失败');let a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=filename+'_positive.jpg';a.click();setTimeout(()=>URL.revokeObjectURL(url),5000);status('已生成 JPG。iPhone 可通过浏览器下载列表保存到照片。')},'image/jpeg',.95);raw=wasRaw;if(raw)setTimeout(render,100)};
+</script></body></html>
